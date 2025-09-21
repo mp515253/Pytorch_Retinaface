@@ -1,3 +1,17 @@
+"""
+train.py - RetinaFace Training Script
+
+This script trains the RetinaFace model on the WiderFace dataset.
+It supports both MobileNet and ResNet backbones.
+
+Features:
+- Handles images with no annotations ("negative negative data") by filtering them out in each batch.
+- Supports resuming training from checkpoints.
+- Adjustable hyperparameters via command-line arguments.
+
+Usage:
+    python train.py --training_dataset <path_to_label.txt> --network <backbone> ...
+"""
 from __future__ import print_function
 import os
 import torch
@@ -87,11 +101,20 @@ with torch.no_grad():
     priors = priors.cuda()
 
 def train():
+    """
+    Train the RetinaFace model.
+
+    Handles negative negative data (images without any annotations) by:
+    - Filtering out images in each batch that have no annotations.
+    - Skipping batches where all images have no annotations.
+
+    Saves model checkpoints and prints training progress.
+    """
     net.train()
     epoch = 0 + args.resume_epoch
     print('Loading Dataset...')
 
-    dataset = WiderFaceDetection( training_dataset,preproc(img_dim, rgb_mean))
+    dataset = WiderFaceDetection(training_dataset, preproc(img_dim, rgb_mean))
 
     epoch_size = math.ceil(len(dataset) / batch_size)
     max_iter = max_epoch * epoch_size
@@ -122,12 +145,20 @@ def train():
         images = images.cuda()
         targets = [anno.cuda() for anno in targets]
 
+        # Filter out images with no annotations (negative negative data)
+        valid_indices = [i for i, anno in enumerate(targets) if anno.numel() > 0]
+        if len(valid_indices) == 0:
+            # Skip batch if all images have no annotations
+            continue
+        images_valid = images[valid_indices]
+        targets_valid = [targets[i] for i in valid_indices]
+
         # forward
-        out = net(images)
+        out = net(images_valid)
 
         # backprop
         optimizer.zero_grad()
-        loss_l, loss_c, loss_landm = criterion(out, priors, targets)
+        loss_l, loss_c, loss_landm = criterion(out, priors, targets_valid)
         loss = cfg['loc_weight'] * loss_l + loss_c + loss_landm
         loss.backward()
         optimizer.step()
@@ -143,9 +174,19 @@ def train():
 
 
 def adjust_learning_rate(optimizer, gamma, epoch, step_index, iteration, epoch_size):
-    """Sets the learning rate
-    # Adapted from PyTorch Imagenet example:
-    # https://github.com/pytorch/examples/blob/master/imagenet/main.py
+    """
+    Adjusts the learning rate according to the current epoch and iteration.
+
+    Args:
+        optimizer: The optimizer being used.
+        gamma: Learning rate decay factor.
+        epoch: Current epoch.
+        step_index: Index for decay steps.
+        iteration: Current iteration.
+        epoch_size: Number of iterations per epoch.
+
+    Returns:
+        lr: The adjusted learning rate.
     """
     warmup_epoch = -1
     if epoch <= warmup_epoch:
